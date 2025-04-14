@@ -5,17 +5,37 @@ frappe.pages['invoicer'].on_page_load = function(wrapper) {
 		single_column: true
 	});
 
+	// Check if we have a design in the URL
+	var route = frappe.get_route();
+	console.log("Route on page load:", route);
+	
+	// Store design name if present
+	if (route.length > 1) {
+		console.log("Design from page load:", route[1]);
+		page.design_to_load = route[1];
+	}
+
 	frappe.print_designer = new frappe.PrintDesigner(page);
 	frappe.breadcrumbs.add("Invoicer", "Print Designer");
 }
 
 frappe.pages['invoicer'].on_page_show = function(wrapper) {
 	var route = frappe.get_route();
-	if (route.length > 1) {
-		// Load existing design if in route
-		frappe.model.with_doc("Print Design", route[1], function() {
+	console.log("Current route in on_page_show:", route);
+	
+	// Check if this is a back/forward navigation or direct URL access
+	if (route.length <= 1) {
+		// If route is just 'invoicer' without a design name, always show the design list
+		console.log("No design in route, showing start page");
+		frappe.print_designer.show_start();
+	} else if (route.length > 1) {
+		// Add a small delay to ensure the page is fully initialized before loading the design
+		// This helps prevent the design from being overwritten by the start page
+		console.log("Will load design from route after short delay:", route[1]);
+		setTimeout(() => {
+			console.log("Now loading design after delay:", route[1]);
 			frappe.print_designer.load_design(route[1]);
-		});
+		}, 300);
 	} else if (frappe.route_options) {
 		if (frappe.route_options.make_new) {
 			// Create new design with specified options
@@ -30,9 +50,6 @@ frappe.pages['invoicer'].on_page_show = function(wrapper) {
 			frappe.route_options = null;
 			frappe.print_designer.refresh();
 		}
-	} else {
-		// Show start page
-		frappe.print_designer.show_start();
 	}
 }
 
@@ -41,6 +58,23 @@ frappe.PrintDesigner = class PrintDesigner {
 		this.page = page;
 		this.wrapper = $(page.body);
 		this.sidebar = $(page.sidebar);
+		
+		// Check if we have a design to load from the page
+		if (page.design_to_load) {
+			console.log("Found design to load from page:", page.design_to_load);
+			this.pending_design_to_load = page.design_to_load;
+		}
+		
+		// Initialize flag for preventing show_start when loading a design
+		this.skip_show_start = false;
+		
+		// Check the current route to determine if we should skip showing start
+		const route = frappe.get_route();
+		if (route.length > 1 && route[0] === 'invoicer') {
+			// We have a design in the URL, set the flag to skip show_start
+			console.log("Setting skip_show_start flag due to design in URL:", route[1]);
+			this.skip_show_start = true;
+		}
 		
 		// Initialize handle_drop method
 		this.handle_drop = (e) => {
@@ -148,8 +182,16 @@ frappe.PrintDesigner = class PrintDesigner {
 		// Load the required libraries
 		this.load_libraries()
 			.then(() => {
-				// Show start screen
-				this.show_start();
+				// Check if we should skip showing the start screen
+				const route = frappe.get_route();
+				console.log("Route during setup:", route, "skip_show_start:", this.skip_show_start);
+				
+				if (!this.skip_show_start) {
+					console.log("Showing start page during setup");
+					this.show_start();
+				} else {
+					console.log("Skipping start page during setup due to skip_show_start flag");
+				}
 			})
 			.catch(err => {
 				console.error('Error loading libraries:', err);
@@ -413,8 +455,28 @@ frappe.PrintDesigner = class PrintDesigner {
 	}
 
 	show_start() {
+		console.log("show_start called");
+		
+		// Check if we're on a specific design route
+		const route = frappe.get_route();
+		console.log("Current route in show_start:", route);
+		
+		// Only skip showing start page if explicitly told to via the route AND if the route has a design name
+		if (route.length > 1 && route[0] === 'invoicer' && this.skip_show_start) {
+			console.log("Skipping show_start because skip_show_start flag is set");
+			this.skip_show_start = false; // Reset the flag
+			return;
+		}
+		
+		// Clear the current design reference to ensure proper state reset
+		this.current_design = null;
+		this.design_name = null;
+		
 		// Clear the wrapper
 		this.wrapper.empty();
+		
+		// Update page title
+		this.page.set_title(__('Invoice Templates'));
 		
 		// Update page actions
 		this.page.clear_primary_action();
@@ -436,116 +498,43 @@ frappe.PrintDesigner = class PrintDesigner {
 			callback: (r) => {
 				if (r.message) {
 					const designs = r.message;
-					let html = `
-						<div class="print-list-view">
-							<div class="toolbar">
-								<div class="flex flex-wrap justify-between w-full">
-									<h5 class="m-0">${__("Your Print Designs")}</h5>
-								</div>
-							</div>
-							
-							<div class="frappe-list">
-								<div class="list-row list-row-head text-muted small">
-									<div class="row">
-										<div class="col-5">${__("Design Name")}</div>
-										<div class="col-3">${__("Reference DocType")}</div>
-										<div class="col-2">${__("Last Modified")}</div>
-										<div class="col-2">${__("Actions")}</div>
-									</div>
-								</div>
-								<div class="result">
-					`;
-
-					if (designs.length === 0) {
-						html += `
-							<div class="no-content">
-								<i class="fa fa-file-o"></i>
-								<p>${__("No print designs found. Click 'New Format' to create one.")}</p>
-							</div>
-						`;
-					} else {
-					designs.forEach(design => {
-							const isDefault = design.is_default ? 
-								`<span class="indicator-pill green">${__("Default")}</span>` : '';
-								
-						html += `
-							<div class="list-row small">
-								<div class="row">
-										<div class="col-5">
-											${design.design_name} ${isDefault}
-										</div>
-									<div class="col-3">${design.reference_doctype || ''}</div>
-										<div class="col-2">${frappe.datetime.prettyDate(design.modified)}</div>
-										<div class="col-2">
-											<div class="actions">
-										<button class="btn btn-xs btn-default edit-design" 
-											data-name="${design.name}">
-													<i class="fa fa-pencil"></i>
-										</button>
-										<button class="btn btn-xs btn-default preview-design" 
-											data-name="${design.name}">
-													<i class="fa fa-eye"></i>
-										</button>
-												<div class="dropdown">
-													<button class="btn btn-xs btn-default dropdown-toggle" 
-														data-toggle="dropdown">
-														<i class="fa fa-cog"></i>
-										</button>
-													<ul class="dropdown-menu dropdown-menu-right" role="menu">
-														${!design.is_default ? 
-															`<li><a class="dropdown-item set-default-design" data-name="${design.name}">
-																${__("Set as Default")}
-															</a></li>` : ''
-														}
-														<li><a class="dropdown-item duplicate-design" data-name="${design.name}">
-															${__("Duplicate")}
-														</a></li>
-														<li><a class="dropdown-item delete-design" data-name="${design.name}">
-															${__("Delete")}
-														</a></li>
-													</ul>
-												</div>
-											</div>
-									</div>
-								</div>
-							</div>
-						`;
-					});
-					}
-
-					html += `
-								</div>
-							</div>
-						</div>
-					`;
-
-					// Clear the page and add the list view
-					this.wrapper.html(html);
-
-					// Add event handlers for the buttons
-					this.wrapper.find('.edit-design').on('click', (e) => {
-						const designName = $(e.currentTarget).data('name');
-						frappe.set_route("invoicer", designName);
-					});
-
-					this.wrapper.find('.preview-design').on('click', (e) => {
-						const designName = $(e.currentTarget).data('name');
-						this.preview_design(designName);
-					});
-
-					this.wrapper.find('.delete-design').on('click', (e) => {
-						const designName = $(e.currentTarget).data('name');
-						this.delete_design(designName);
-					});
-
-					this.wrapper.find('.duplicate-design').on('click', (e) => {
-						const designName = $(e.currentTarget).data('name');
-						this.duplicate_design(designName);
+					
+					// Clear the page content first
+					this.wrapper.empty();
+					
+					// Create gallery container
+					const galleryContainer = $('<div class="gallery-container"></div>');
+					this.wrapper.append(galleryContainer);
+					
+					// Import the TemplateGallery component
+					import('/assets/invoicer/js/src/components/ui/TemplateGallery.js').then(module => {
+						const TemplateGallery = module.default;
+						
+						// Initialize the gallery
+						const gallery = new TemplateGallery({
+							wrapper: galleryContainer,
+							designs: designs,
+							onSelect: (designName) => {
+								frappe.set_route("invoicer", designName);
+							},
+							onDelete: (designName) => {
+								this.delete_design(designName);
+							},
+							onDuplicate: (designName) => {
+								this.duplicate_design(designName);
+							},
+							onSetDefault: (designName) => {
+								this.set_default_design(designName);
+							}
+						});
+						
+						// Render the gallery
+						gallery.render();
 					});
 					
-					this.wrapper.find('.set-default-design').on('click', (e) => {
-						const designName = $(e.currentTarget).data('name');
-						this.set_default_design(designName);
+					// Attach event handler for the New Format button
+					this.wrapper.find('.new-format-btn').on('click', () => {
+						this.show_new_format_dialog();
 					});
 				}
 			}
@@ -667,6 +656,11 @@ frappe.PrintDesigner = class PrintDesigner {
 	}
 
 	load_design(designName) {
+		console.log("Attempting to load design:", designName);
+		
+		// Set flag to prevent show_start from running when called by setup_page
+		this.skip_show_start = true;
+		
 		frappe.call({
 			method: 'invoicer.invoicer.page.invoicer.invoicer.get_invoice_design',
 			args: { design_name: designName },
@@ -674,28 +668,58 @@ frappe.PrintDesigner = class PrintDesigner {
 			freeze_message: __("Loading design..."),
 			callback: (r) => {
 				if (r.message && r.message.success) {
+					console.log("Design loaded successfully:", designName);
 					this.current_design = designName;
 					this.design_name = r.message.design_name;
 					this.properties = r.message.properties || {};
 					this.doctype = this.properties.doctype || r.message.properties.doctype;
-					this.is_default = r.message.is_default;
 					
 					// Update page title and actions
 					this.page.set_title(__("Editing: {0}", [this.design_name]));
 					
-					// Update the URL to reflect the current design
-					frappe.set_route("invoicer", designName, false);
-					
-					// Setup design editor
+					// Setup design editor with the loaded content
 					this.setup_design_editor(r.message.content);
 				} else {
-					frappe.throw(__("Failed to load design"));
+					// Show a more detailed error message
+					const errorMsg = r.message && r.message.message ? r.message.message : __("Failed to load design");
+					
+					frappe.show_alert({
+						message: errorMsg,
+						indicator: 'red'
+					}, 5);
+					
+					// Log the error for debugging
+					console.error("Error loading design:", r.message);
+					
+					// Reset skip flag since we're showing start page due to error
+					this.skip_show_start = false;
+					
+					// Navigate back to the start page
+					this.show_start();
 				}
+			},
+			error: (r) => {
+				// Handle network or server errors
+				frappe.show_alert({
+					message: __("Network error while loading design. Please try again."),
+					indicator: 'red'
+				}, 5);
+				console.error("Network error loading design:", r);
+				
+				// Reset skip flag since we're showing start page due to error
+				this.skip_show_start = false;
+				
+				this.show_start();
 			}
 		});
 	}
 
 	setup_design_editor(content) {
+		console.log("Setting up design editor with content length:", content ? content.length : 0);
+		
+		// Store the content for later use in init_canvas
+		this.loaded_content = content;
+		
 		// Update page actions
 		this.page.clear_primary_action();
 		this.page.clear_secondary_action();
@@ -1074,8 +1098,15 @@ frappe.PrintDesigner = class PrintDesigner {
 	init_canvas() {
 		const canvas = document.getElementById('print-canvas');
 		
+		// Check if we have content from a loaded design
+		if (this.loaded_content) {
+			// Apply the loaded content to the canvas
+			canvas.innerHTML = this.loaded_content;
+			// Clear the loaded content after applying it
+			this.loaded_content = null;
+		} 
 		// Ensure there's a container if the canvas is empty
-		if (!canvas.querySelector('.canvas-element')) {
+		else if (!canvas.querySelector('.canvas-element')) {
 			canvas.innerHTML = this.create_default_container().outerHTML;
 		}
 		
@@ -1170,7 +1201,7 @@ frappe.PrintDesigner = class PrintDesigner {
 					// Add the selector to the UI
 					this.wrapper.find('.doctype-fields').html(selectorHtml);
 					
-					// Add event handler for the selector
+					// Add event handler for the doctype selector
 					this.wrapper.find('.doctype-selector').on('change', (e) => {
 						const selectedOption = e.target.options[e.target.selectedIndex];
 						const selectedDoctype = e.target.value;
@@ -1178,17 +1209,151 @@ frappe.PrintDesigner = class PrintDesigner {
 						
 						// Load fields for the selected doctype
 						this.load_fields_for_doctype(selectedDoctype, this.doctype, linkFieldname);
+						
+						// Load latest document data for this doctype
+						this.load_latest_document_data(selectedDoctype);
 					});
 					
 					// Load fields for the default doctype (the main one)
 					this.load_fields_for_doctype(this.doctype);
+					
+					// Load latest document data for the main doctype
+					this.load_latest_document_data(this.doctype);
 				}
 			}
 		});
 	}
 	
-	// Helper method to load fields for a specific doctype
+	// Load the latest document data for a doctype
+	load_latest_document_data(doctype) {
+		// If this is our first time loading a document or this is the main doctype
+		if (!this.main_document || doctype === this.doctype) {
+			frappe.call({
+				method: 'invoicer.invoicer.page.invoicer.invoicer.get_doctype_data',
+				args: {
+					doctype: doctype,
+					// No docname - the backend will fetch the latest one
+				},
+				callback: (r) => {
+					if (r.message && r.message.success) {
+						// Store the document data for use in previews
+						this.document_data = r.message.doc;
+						
+						// Store the main document info for future reference to related doctypes
+						if (!this.main_document) {
+							this.main_document = {
+								doctype: doctype,
+								docname: this.document_data.name
+							};
+						}
+						
+						// Update any existing field elements with the real data
+						this.update_field_elements_with_real_data();
+						
+						// Show the current document name in the sidebar instead of alert box
+						this.update_document_sidebar_info();
+						
+						// Store the current document info
+						this.current_document = {
+							doctype: doctype,
+							docname: this.document_data.name
+						};
+					} else {
+						// Update the sidebar to show no documents found
+						this.wrapper.find('.sidebar-document-info').html(`
+							<div class="sidebar-section">
+								<div class="sidebar-section-title">${__("Document Info")}</div>
+								<div class="sidebar-section-content">
+									<span class="text-muted">${__("No documents found")}</span>
+								</div>
+							</div>
+						`);
+						
+						frappe.show_alert({
+							message: r.message?.message || __("No documents found for {0}", [doctype]),
+							indicator: 'orange'
+						}, 3);
+					}
+				}
+			});
+		} else {
+			// This is a related doctype, fetch related data
+			frappe.call({
+				method: 'invoicer.invoicer.page.invoicer.invoicer.get_related_doctype_data',
+				args: {
+					main_doctype: this.main_document.doctype,
+					main_docname: this.main_document.docname,
+					related_doctype: doctype,
+					link_fieldname: this.get_link_fieldname_for_doctype(doctype)
+				},
+				callback: (r) => {
+					if (r.message && r.message.success) {
+						// For related doctypes, we store their data in a separate object
+						if (!this.related_documents) {
+							this.related_documents = {};
+						}
+						
+						// Store the related document data
+						this.related_documents[doctype] = r.message.doc;
+						
+						// Update any related field elements
+						this.update_field_elements_with_real_data();
+						
+						// Update the sidebar to show we're using a related document
+						this.update_related_document_sidebar_info(doctype, r.message.doc.name);
+						
+						// Current document reference is still the related one for field mapping
+						this.current_document = {
+							doctype: doctype,
+							docname: r.message.doc.name,
+							is_related: true
+						};
+					} else {
+						// Show error but don't change the document_data
+						frappe.show_alert({
+							message: r.message?.message || __("No related documents found for {0}", [doctype]),
+							indicator: 'orange'
+						}, 3);
+					}
+				}
+			});
+		}
+	}
+	
+	// Helper function to get link fieldname for a doctype
+	get_link_fieldname_for_doctype(doctype) {
+		const doctypeSelector = this.wrapper.find('.doctype-selector').get(0);
+		if (doctypeSelector) {
+			const selectedOption = Array.from(doctypeSelector.options).find(option => option.value === doctype);
+			return selectedOption ? selectedOption.getAttribute('data-fieldname') : null;
+		}
+		return null;
+	}
+	
+	// Update the document info in the sidebar instead of in the alert box
+	update_document_sidebar_info() {
+		// Document Info section is removed as per user request
+		// Store document data for internal use but don't display it in the sidebar
+		
+		// Remove the document info section if it exists
+		this.wrapper.find('.sidebar-document-info').remove();
+		this.wrapper.find('.sidebar-related-documents').remove();
+		
+		// Remove the alert box that was showing the document info
+		this.wrapper.find('.latest-document-info').hide();
+	}
+	
+	// Update sidebar to show related document info
+	update_related_document_sidebar_info(doctype, docname, quiet = false) {
+		// Related document info section is removed as per user request
+		// Store related document data for internal use but don't display it in the sidebar
+		
+		// Remove any existing related document sections
+		this.wrapper.find('.sidebar-related-documents').remove();
+	}
+	
 	load_fields_for_doctype(doctype, parent_doctype = null, link_fieldname = null) {
+		console.log("Loading fields for doctype:", doctype);
 		frappe.call({
 			method: 'invoicer.invoicer.page.invoicer.invoicer.get_doctype_fields',
 			args: { 
@@ -1197,12 +1362,14 @@ frappe.PrintDesigner = class PrintDesigner {
 				link_fieldname: link_fieldname
 			},
 			callback: (r) => {
+				console.log("Response from get_doctype_fields:", r.message);
 				if (r.message && r.message.success) {
 					const fields = r.message.fields;
 					let html = '';
 					
 					// Display all fields in one list
 					if (fields.length) {
+						console.log("Found " + fields.length + " fields for doctype " + doctype);
 						html += `<div class="field-group">
 							<div class="field-group-title small">${__("Fields")}</div>`;
 						
@@ -1221,15 +1388,29 @@ frappe.PrintDesigner = class PrintDesigner {
 						
 						html += `</div>`;
 					} else {
+						console.log("No fields returned for doctype " + doctype);
 						html = `<div class="text-center text-muted">
 							${__("No fields available")}
 						</div>`;
 					}
 					
 					this.wrapper.find('.doctype-fields-container').html(html);
+					console.log("Updated fields container HTML");
 					
 					// Add drag events to field items
 					this.bind_field_drag_events();
+				} else {
+					console.error("Failed to load fields for doctype " + doctype);
+					if (r.message && r.message.message) {
+						console.error("Error message:", r.message.message);
+					}
+					
+					// Show a message in the UI
+					this.wrapper.find('.doctype-fields-container').html(`
+						<div class="text-center text-muted">
+							${__("Failed to load fields for")} ${doctype}
+						</div>
+					`);
 				}
 			}
 		});
@@ -1288,17 +1469,35 @@ frappe.PrintDesigner = class PrintDesigner {
 	}
 	
 	bind_field_drag_events() {
-		const fieldItems = this.wrapper.find('.field-item').get();
+		// Find all field items and add drag events
+		const fieldItems = this.wrapper.find('.field-item');
+		console.log("Found " + fieldItems.length + " field items to bind drag events");
 		
-		fieldItems.forEach(item => {
-			item.addEventListener('dragstart', (e) => {
-				const doctype = item.dataset.doctype || this.doctype;
-				e.dataTransfer.setData('text/plain', `field:${item.dataset.fieldname}:${item.dataset.fieldtype}:${item.dataset.options}:${doctype}`);
-				item.classList.add('dragging');
-			});
-			
-			item.addEventListener('dragend', () => {
-				item.classList.remove('dragging');
+		// Debug: check if the fields container has content
+		const fieldsContainer = this.wrapper.find('.doctype-fields-container');
+		console.log("Fields container HTML (first 500 chars):", fieldsContainer.html() ? fieldsContainer.html().substring(0, 500) : "Empty");
+		
+		// Check if the fields container is visible
+		const containerStyle = window.getComputedStyle(fieldsContainer[0]);
+		console.log("Fields container display:", containerStyle.display);
+		console.log("Fields container visibility:", containerStyle.visibility);
+		console.log("Fields container height:", containerStyle.height);
+		
+		// Look at first field item for debugging
+		if (fieldItems.length > 0) {
+			const firstItem = fieldItems[0];
+			console.log("First field item:", firstItem.outerHTML);
+		}
+		
+		fieldItems.each((i, el) => {
+			$(el).on('dragstart', (e) => {
+				const fieldname = $(el).data('fieldname');
+				const fieldtype = $(el).data('fieldtype');
+				const options = $(el).data('options');
+				const doctype = $(el).data('doctype');
+				
+				e.originalEvent.dataTransfer.setData('text/plain', 
+					`field:${fieldname}:${fieldtype}:${options}:${doctype}`);
 			});
 		});
 	}
@@ -1327,6 +1526,34 @@ frappe.PrintDesigner = class PrintDesigner {
 			const canvas = this.wrapper.find('.print-canvas');
 			canvas.css('zoom', 1);
 			this.wrapper.find('.zoom-reset-btn').text('100%');
+		});
+		
+		// Add refresh document data button
+		this.wrapper.find('.toolbar-container').append(`
+			<div class="btn-group ml-3">
+				<button class="btn btn-default btn-sm refresh-data-btn" title="${__('Refresh Document Data')}">
+					<i class="fa fa-refresh"></i> ${__('Refresh Data')}
+				</button>
+			</div>
+		`);
+		
+		// Add event handler for the refresh button
+		this.wrapper.find('.refresh-data-btn').on('click', () => {
+			if (this.current_document) {
+				this.load_latest_document_data(this.current_document.doctype);
+			} else {
+				// If no document is currently loaded, try to get one
+				const selectedDoctype = this.wrapper.find('.doctype-selector').val();
+				
+				if (selectedDoctype) {
+					this.load_latest_document_data(selectedDoctype);
+				} else {
+					frappe.show_alert({
+						message: __("No doctype selected"),
+						indicator: 'orange'
+					}, 3);
+				}
+			}
 		});
 		
 		// Toggle grid
@@ -1468,6 +1695,58 @@ frappe.PrintDesigner = class PrintDesigner {
 			case 'qrcode':
 				icon = 'fa-qrcode';
 				label = 'QR Code';
+				break;
+			case 'field':
+				// Handle field elements
+				icon = 'fa-database';
+				label = 'Field';
+				
+				// Get the field element
+				const fieldElement = element.querySelector('.field-element');
+				if (fieldElement) {
+					// Get the field name
+					const fieldname = fieldElement.getAttribute('data-fieldname');
+					const fieldtype = fieldElement.getAttribute('data-fieldtype');
+					
+					if (fieldname) {
+						label = 'Field: ' + fieldname;
+						
+						// Set icon based on fieldtype
+						if (fieldtype) {
+							switch (fieldtype) {
+								case 'Currency':
+									icon = 'fa-money';
+									break;
+								case 'Date':
+									icon = 'fa-calendar';
+									break;
+								case 'Int':
+								case 'Float':
+									icon = 'fa-calculator';
+									break;
+								case 'Check':
+									icon = 'fa-check-square-o';
+									break;
+								case 'Data':
+									icon = 'fa-font';
+									break;
+								case 'Text':
+								case 'Small Text':
+								case 'Long Text':
+									icon = 'fa-align-left';
+									break;
+								case 'Link':
+									icon = 'fa-link';
+									break;
+								case 'Select':
+									icon = 'fa-list';
+									break;
+								default:
+									icon = 'fa-database';
+							}
+						}
+					}
+				}
 				break;
 			case 'table':
 				icon = 'fa-table';
@@ -1682,13 +1961,43 @@ frappe.PrintDesigner = class PrintDesigner {
 			}
 		});
 		
+		// Handle field elements - replace actual values with templates for saving
+		tempCanvas.querySelectorAll('.field-element').forEach(fieldElement => {
+			const template = fieldElement.getAttribute('data-template');
+			if (template) {
+				// Replace the real data with the template
+				fieldElement.textContent = template;
+			}
+		});
+		
 		// Handle table elements - replace sample data with Jinja templates
 		tempCanvas.querySelectorAll('.table-element').forEach(tableElement => {
 			const jinjaTemplate = tableElement.getAttribute('data-jinja-template');
 			if (jinjaTemplate) {
+				// First, fix any doc.row references in the template
+				let fixedTemplate = jinjaTemplate;
+				if (fixedTemplate.includes('doc.row.')) {
+					console.error('Found doc.row. references in template during save, fixing...');
+					fixedTemplate = fixedTemplate.replace(/doc\.row\./g, 'row.');
+					tableElement.setAttribute('data-jinja-template', fixedTemplate);
+				}
+				
 				const table = tableElement.querySelector('table');
 				if (table && table.querySelector('tbody')) {
-					table.querySelector('tbody').innerHTML = jinjaTemplate;
+					// Instead of trying to insert the Jinja template as HTML (which can cause issues with special characters),
+					// we'll add a special marker that will be replaced server-side
+					const tbody = table.querySelector('tbody');
+					tbody.innerHTML = '<tr><td colspan="100%" data-jinja-placeholder="true">TABLE_TEMPLATE_PLACEHOLDER</td></tr>';
+					
+					// Store the actual template as a data attribute that won't be parsed as HTML
+					// Use the fixed template (without doc.row) for jinja-code
+					table.setAttribute('data-jinja-code', fixedTemplate);
+				}
+				
+				// Check the innerHTML as well
+				if (tableElement.innerHTML.includes('doc.row.')) {
+					console.error('Found doc.row. in table element innerHTML, fixing...');
+					tableElement.innerHTML = tableElement.innerHTML.replace(/doc\.row\./g, 'row.');
 				}
 			}
 			
@@ -1747,13 +2056,34 @@ frappe.PrintDesigner = class PrintDesigner {
 			...this.properties
 		};
 		
+		// Get the final HTML content
+		let finalHtml = tempCanvas.innerHTML;
+		
+		// Final safety check for doc.row references in the complete HTML
+		if (finalHtml.includes('doc.row.')) {
+			console.error('FINAL CHECK: Found doc.row. references in complete HTML before saving!');
+			finalHtml = finalHtml.replace(/doc\.row\./g, 'row.');
+			
+			// Specifically look for and fix any table tbody content with doc.row
+			const tempDiv = document.createElement('div');
+			tempDiv.innerHTML = finalHtml;
+			tempDiv.querySelectorAll('tbody').forEach(tbody => {
+				if (tbody.innerHTML.includes('doc.row.')) {
+					console.error('Found doc.row in tbody during final save check, fixing...');
+					tbody.innerHTML = tbody.innerHTML.replace(/doc\.row\./g, 'row.');
+				}
+			});
+			
+			// Update the final HTML with our fixed content
+			finalHtml = tempDiv.innerHTML;
+		}
+		
 		frappe.call({
 			method: 'invoicer.invoicer.page.invoicer.invoicer.save_invoice_design',
 			args: {
 				design_name: this.design_name,
-				content: tempCanvas.innerHTML,
+				content: finalHtml,
 				properties: properties,
-				is_default: this.is_default ? 1 : 0
 			},
 			freeze: true,
 			freeze_message: __("Saving design..."),
@@ -2046,22 +2376,52 @@ frappe.PrintDesigner = class PrintDesigner {
 		
 		// If doctype is provided and is different from the main doctype, it's a linked field
 		if (doctype && doctype !== this.doctype) {
-			// Find the link field in the linked doctypes
-			const linkField = this.linkedDoctypes.find(dt => dt.value === doctype)?.fieldname;
+			// Find the link field in the linkedDoctypes
+			const linkField = this.linkedDoctypes?.find(dt => dt.value === doctype)?.fieldname;
 			
-			if (linkField) {
-				// Determine if fieldname already has a prefix
-				const originalFieldname = fieldname.includes('.') ? fieldname.split('.')[1] : fieldname;
+			// Handle various field path formats
+			if (fieldname.includes('.')) {
+				// Field already has a prefix, use it directly in the template
+				fieldPath = fieldname;
 				isLinkedField = true;
-				
-				// Format: {{frappe.db.get_value("LinkedDoctype", doc.link_field, "field_name")}}
-				contentTemplate = `{{frappe.db.get_value("${doctype}", doc.${linkField}, "${originalFieldname}")}}`;
+				contentTemplate = `{{${fieldPath}}}`;
+			} else if (linkField) {
+				// Field needs to be prefixed with the link field
+				isLinkedField = true;
+				fieldPath = `${linkField}.${fieldname}`;
+				contentTemplate = `{{doc.${fieldPath}}}`;
+			} else {
+				// Doctype but no linkField - must be a related doctype
+				isLinkedField = true;
+				fieldPath = `${doctype.toLowerCase()}.${fieldname}`;
+				contentTemplate = `{{doc.${fieldPath}}}`;
 			}
+		} else {
+			// Regular field in the main doctype
+			contentTemplate = `{{doc.${fieldPath}}}`;
 		}
 		
-		// If not a linked field, use standard format
-		if (!isLinkedField) {
-			contentTemplate = `{{${fieldPath}}}`;
+		// Get actual value from document data if available
+		let displayValue = __('No data available');
+		
+		if (this.document_data) {
+			const value = this.get_field_value(fieldname);
+			
+			if (value !== undefined && value !== null) {
+				// Format based on fieldtype
+				if (fieldtype === 'Date' && value) {
+					displayValue = frappe.datetime.str_to_user(value);
+				} else if (fieldtype === 'Currency' && value) {
+					displayValue = format_currency(value, frappe.defaults.get_default('currency'));
+				} else if (fieldtype === 'Check' && value !== undefined) {
+					displayValue = value ? '✓' : '✗';
+				} else {
+					displayValue = value;
+				}
+			}
+		} else {
+			// No document data yet, use placeholder based on fieldtype
+			displayValue = this.get_field_placeholder(fieldtype);
 		}
 		
 		let content = '';
@@ -2071,81 +2431,99 @@ frappe.PrintDesigner = class PrintDesigner {
 			case 'Small Text':
 			case 'Link':
 			case 'Select':
+			case 'Read Only':
+				content = `<div class="field-element" data-type="field" 
+					data-fieldname="${fieldname}" 
+					data-fieldtype="${fieldtype}"
+					data-doctype="${doctype || this.doctype}"
+					data-template="${contentTemplate}">${displayValue}</div>`;
+				break;
+			
+			case 'Currency':
+			case 'Float':
+			case 'Percent':
+			case 'Int':
+				content = `<div class="field-element" data-type="field" 
+					data-fieldname="${fieldname}" 
+					data-fieldtype="${fieldtype}"
+					data-doctype="${doctype || this.doctype}"
+					data-template="${contentTemplate}">${displayValue}</div>`;
+				break;
+			
 			case 'Date':
 			case 'Datetime':
-			case 'Time':
-			case 'Int':
-			case 'Float':
-			case 'Currency':
-			case 'Code':
-			case 'Text Editor':
-			case 'Markdown Editor':
-			case 'HTML Editor':
+				content = `<div class="field-element" data-type="field" 
+					data-fieldname="${fieldname}" 
+					data-fieldtype="${fieldtype}"
+					data-doctype="${doctype || this.doctype}"
+					data-template="${contentTemplate}">${displayValue}</div>`;
+				break;
+			
 			case 'Check':
-			case 'Password':
-			case 'Read Only':
-			case 'Color':
-			case 'Percent':
-			case 'Rating':
-			case 'JSON':
-				content = `<div class="text-element" data-type="text" data-content-type="field" data-fieldname="${fieldname}" data-fieldtype="${fieldtype}" data-doctype="${doctype || ''}">${contentTemplate}</div>`;
+				content = `<div class="field-element" data-type="field" 
+					data-fieldname="${fieldname}" 
+					data-fieldtype="${fieldtype}"
+					data-doctype="${doctype || this.doctype}"
+					data-template="${contentTemplate}">${displayValue}</div>`;
 				break;
-			case 'Attach Image':
-			case 'Image':
-			case 'Signature':
-			case 'Barcode':
-				content = `<div class="image-element" data-type="image" data-content-type="field" data-fieldname="${fieldname}" data-fieldtype="${fieldtype}" data-doctype="${doctype || ''}">
-					<img src="/assets/frappe/images/fallback.png" style="width: 200px; height: 200px; object-fit: contain;" data-src="${contentTemplate}">
-				</div>`;
-				break;
+			
 			case 'Table':
-			case 'Table MultiSelect':
-				// For table fields, show a simple table without sample columns
-				content = `<div class="table-element" data-type="table" data-content-type="field" data-fieldname="${fieldname}" data-fieldtype="${fieldtype}" data-options="${options}" data-doctype="${doctype || ''}" style="width: 100%">
-					<div class="table-placeholder">
-						<table class="table table-bordered" style="width: 100%">
-							<thead>
-								<tr>
-									<th>${__("Table") + ": " + options}</th>
-								</tr>
-							</thead>
-							<tbody>
-								<tr>
-									<td>${__("Click to configure table")}</td>
-								</tr>
-							</tbody>
-						</table>
-					</div>
-					<div class="table-dynamic-note" style="font-size: 10px; color: #888; margin-top: 5px;">
-						${__("Dynamic table will be rendered using")} {% for row in doc.${fieldPath} %}
+				// For table fields, create a table element
+				content = `<div class="table-element" data-type="table" 
+					data-fieldname="${fieldname}" 
+					data-options="${options}"
+					data-doctype="${doctype || this.doctype}">
+					<div class="table-dynamic-note text-muted text-center" style="padding: 10px;">
+						${__('Click to configure table columns')}
 					</div>
 				</div>`;
+				
+				// Schedule configuration dialog
+				setTimeout(() => {
+					const tableElement = element.querySelector('.table-element');
+					if (tableElement) {
+						this.configure_table(element);
+					}
+				}, 100);
 				break;
+			
 			default:
-				content = `<div class="text-element" data-type="text" data-content-type="field" data-fieldname="${fieldname}" data-fieldtype="${fieldtype}" data-doctype="${doctype || ''}">${contentTemplate}</div>`;
+				content = `<div class="field-element" data-type="field" 
+					data-fieldname="${fieldname}" 
+					data-fieldtype="${fieldtype}"
+					data-doctype="${doctype || this.doctype}"
+					data-template="${contentTemplate}">${displayValue}</div>`;
 				break;
 		}
 		
 		element.innerHTML = content;
 		
-		// For text elements, attach specific content events 
-		if (['Data', 'Text', 'Small Text', 'Link', 'Select', 'Date', 'Datetime', 'Time', 'Int', 'Float', 'Currency',
-			 'Code', 'Text Editor', 'Markdown Editor', 'HTML Editor', 'Check', 'Password', 'Read Only', 'Color',
-			 'Percent', 'Rating', 'JSON'].includes(fieldtype)) {
-			const contentElement = element.querySelector('.text-element');
-			if (contentElement) {
-				this.attach_content_events(contentElement);
-			}
-		}
-
-		// If it's a table element, show configuration dialog immediately
-		if (fieldtype === 'Table' || fieldtype === 'Table MultiSelect') {
-			setTimeout(() => {
-				this.configure_table(element);
-			}, 100);
-		}
-
+		// Attach events to the new element
+		this.attach_element_events(element);
+		
 		return element;
+	}
+	
+	// Helper method to generate placeholders for different field types
+	get_field_placeholder(fieldtype) {
+		switch (fieldtype) {
+			case 'Currency':
+				return format_currency(12345.67, frappe.defaults.get_default('currency'));
+			case 'Float':
+				return '123.45';
+			case 'Int':
+				return '42';
+			case 'Percent':
+				return '75%';
+			case 'Date':
+				return frappe.datetime.str_to_user(frappe.datetime.now_date());
+			case 'Datetime':
+				return frappe.datetime.str_to_user(frappe.datetime.now_datetime());
+			case 'Check':
+				return '✓';
+			default:
+				return __('Sample Value');
+		}
 	}
 
 	attach_element_events(element) {
@@ -2836,7 +3214,7 @@ frappe.PrintDesigner = class PrintDesigner {
 						</div>
 					</div>
 					<div class="property-field">
-						<label>${__("Error Correction Level")}</label>
+						<label>${__("Error Correction")}</label>
 						<select class="form-control prop-qrcode-level">
 							<option value="L" ${qrLevel === 'L' ? 'selected' : ''}>${__("Low (7%)")}</option>
 							<option value="M" ${qrLevel === 'M' ? 'selected' : ''}>${__("Medium (15%)")}</option>
@@ -2855,9 +3233,6 @@ frappe.PrintDesigner = class PrintDesigner {
 					<div class="property-field">
 						<label>${__("Background Color")}</label>
 						<input type="color" class="form-control prop-qrcode-background" value="${this.normalizeColor(qrBgColor)}">
-					</div>
-					<div class="property-field mt-2">
-						<button class="btn btn-sm btn-primary btn-generate-qrcode">${__("Generate QR Code")}</button>
 					</div>
 				</div>
 			`;
@@ -3242,16 +3617,28 @@ frappe.PrintDesigner = class PrintDesigner {
 				if (dataType === 'static') {
 					panel.find('.prop-static-value-field').show();
 					panel.find('.prop-field-value-field').hide();
+					// Set the value from the static field
+					const staticValue = panel.find('.prop-qrcode-value').val();
+					qrcodeElement.setAttribute('data-value', staticValue);
 				} else {
 					panel.find('.prop-static-value-field').hide();
 					panel.find('.prop-field-value-field').show();
+					// Set the value from the field selector
+					const fieldValue = panel.find('.prop-qrcode-field').val();
+					if (fieldValue) {
+						qrcodeElement.setAttribute('data-value', `{{${fieldValue}}}`);
 				}
+				}
+				// Auto-update the QR code
+				me.generateQRCode(qrcodeElement);
 			});
 			
 			// Handle QR code value change
 			panel.find('.prop-qrcode-value').on('change', function() {
 				const value = $(this).val();
 				qrcodeElement.setAttribute('data-value', value);
+				// Auto-update the QR code
+				me.generateQRCode(qrcodeElement);
 			});
 			
 			// Handle field selection for dynamic QR codes
@@ -3259,39 +3646,49 @@ frappe.PrintDesigner = class PrintDesigner {
 				const fieldName = $(this).val();
 				if (fieldName) {
 					qrcodeElement.setAttribute('data-value', `{{${fieldName}}}`);
+					// Auto-update the QR code
+					me.generateQRCode(qrcodeElement);
 				}
 			});
 			
 			// Handle size change
 			panel.find('.prop-qrcode-size').on('change', function() {
 				const size = $(this).val();
+				
 				qrcodeElement.setAttribute('data-size', size);
-				const qrcodeDisplay = qrcodeElement.querySelector('.qrcode-display');
-				const qrcodeCanvas = qrcodeElement.querySelector('canvas');
-				if (qrcodeDisplay) {
-					qrcodeDisplay.style.width = size + 'px';
-					qrcodeDisplay.style.height = size + 'px';
-				}
+				// Auto-update the QR code
+				me.generateQRCode(qrcodeElement);
 			});
 			
 			// Handle color change
 			panel.find('.prop-qrcode-foreground').on('change', function() {
 				const color = $(this).val();
 				qrcodeElement.setAttribute('data-foreground', color);
+				// Auto-update the QR code
+				me.generateQRCode(qrcodeElement);
 			});
 			
 			// Handle background color change
 			panel.find('.prop-qrcode-background').on('change', function() {
-				const bgcolor = $(this).val();
-				qrcodeElement.setAttribute('data-background', bgcolor);
-				const qrcodeDisplay = qrcodeElement.querySelector('.qrcode-display');
-				if (qrcodeDisplay) {
-					qrcodeDisplay.style.backgroundColor = bgcolor;
-				}
+				const color = $(this).val();
+				qrcodeElement.setAttribute('data-background', color);
+				// Auto-update the QR code
+				me.generateQRCode(qrcodeElement);
 			});
 			
-			// Handle generate button click
-			panel.find('.btn-generate-qrcode').on('click', function() {
+			// Handle padding change
+			panel.find('.prop-qrcode-padding').on('change', function() {
+				const padding = $(this).val();
+				qrcodeElement.setAttribute('data-padding', padding);
+				// Auto-update the QR code
+				me.generateQRCode(qrcodeElement);
+			});
+			
+			// Handle error correction level change
+			panel.find('.prop-qrcode-level').on('change', function() {
+				const level = $(this).val();
+				qrcodeElement.setAttribute('data-level', level);
+				// Auto-update the QR code
 				me.generateQRCode(qrcodeElement);
 			});
 		}
@@ -3587,30 +3984,38 @@ frappe.PrintDesigner = class PrintDesigner {
 		return;
 	}
 	
+	// Configure the table functionality
 	configure_table(element) {
 		const tableElement = element.querySelector('.table-element');
 		if (!tableElement) return;
 		
 		const fieldname = tableElement.getAttribute('data-fieldname');
-		const options = tableElement.getAttribute('data-options'); // Child DocType
+		const childDoctype = tableElement.getAttribute('data-options');
 		
-		if (!options) {
-			frappe.msgprint(__("Table configuration not possible. Missing child doctype information."));
+		if (!childDoctype) {
+			frappe.msgprint(__('Child DocType not specified for table'));
 				return;
 			}
 
-		// Fetch fields from child doctype
+		// Fetch fields for this DocType
 		frappe.call({
 			method: 'invoicer.invoicer.page.invoicer.invoicer.get_doctype_fields',
-			args: { doctype: options },
-			freeze: true,
-			freeze_message: __("Loading fields..."),
+			args: {
+				doctype: childDoctype
+			},
 			callback: (r) => {
 				if (r.message && r.message.success) {
-					const fields = r.message.fields || [];
-					this.show_table_field_selector(element, fieldname, options, fields);
+					// Enhance field data by adding clean versions of field names
+					const fields = r.message.fields.map(field => {
+						// Add a cleaned version of the field name (no special characters)
+						field.clean_fieldname = field.fieldname.replace(/[^a-zA-Z0-9_]/g, '_');
+						return field;
+					});
+					
+					// Show field selector
+					this.show_table_field_selector(element, fieldname, childDoctype, fields);
 				} else {
-					frappe.msgprint(__("Could not fetch fields for {0}", [options]));
+					frappe.msgprint(__('Failed to fetch fields for {0}', [childDoctype]));
 				}
 			}
 		});
@@ -3696,6 +4101,34 @@ frappe.PrintDesigner = class PrintDesigner {
 				// Update table preview based on selected fields
 				this.update_table_preview(tableElement, fields, newSelectedFields);
 				
+				// Perform an additional check after update to ensure doc.row has been replaced with row
+				setTimeout(() => {
+					// Fix any doc.row references in the table templates
+					const jinjaTemplate = tableElement.getAttribute('data-jinja-template');
+					const jinjaCode = tableElement.getAttribute('data-jinja-code');
+					
+					// Fix data-jinja-template attribute
+					if (jinjaTemplate && jinjaTemplate.includes('doc.row.')) {
+						console.error('Found doc.row. in table template after update, fixing...');
+						const fixedTemplate = jinjaTemplate.replace(/doc\.row\./g, 'row.');
+						tableElement.setAttribute('data-jinja-template', fixedTemplate);
+					}
+					
+					// Fix data-jinja-code attribute
+					if (jinjaCode && jinjaCode.includes('doc.row.')) {
+						console.error('Found doc.row. in table code after update, fixing...');
+						const fixedCode = jinjaCode.replace(/doc\.row\./g, 'row.');
+						tableElement.setAttribute('data-jinja-code', fixedCode);
+					}
+					
+					// Also check the table's tbody HTML content
+					const tbody = tableElement.querySelector('tbody');
+					if (tbody && tbody.innerHTML.includes('doc.row.')) {
+						console.error('Found doc.row. in tbody HTML after update, fixing...');
+						tbody.innerHTML = tbody.innerHTML.replace(/doc\.row\./g, 'row.');
+					}
+				}, 500);
+				
 				dialog.hide();
 			}
 		});
@@ -3714,7 +4147,7 @@ frappe.PrintDesigner = class PrintDesigner {
 			});
 			
 			// Update preview
-			const previewHtml = this.get_table_preview_html(previewFields);
+			const previewHtml = this.get_table_preview_html(previewFields, fieldname);
 			dialog.$wrapper.find('.table-preview').html(previewHtml);
 			
 			// Initialize column resizers in the preview
@@ -3727,7 +4160,7 @@ frappe.PrintDesigner = class PrintDesigner {
 		// Show initial preview if fields are already selected
 		if (selectedFields.length > 0) {
 			const previewFields = fields.filter(f => selectedFields.includes(f.fieldname));
-			const previewHtml = this.get_table_preview_html(previewFields);
+			const previewHtml = this.get_table_preview_html(previewFields, fieldname);
 			dialog.$wrapper.find('.table-preview').html(previewHtml);
 			
 			// Initialize column resizers in the preview
@@ -3738,7 +4171,7 @@ frappe.PrintDesigner = class PrintDesigner {
 		} else {
 			// Show default preview with first 5 fields
 			const previewFields = fields.slice(0, 5);
-			const previewHtml = this.get_table_preview_html(previewFields);
+			const previewHtml = this.get_table_preview_html(previewFields, fieldname);
 			dialog.$wrapper.find('.table-preview').html(previewHtml);
 			
 			// Initialize column resizers in the preview
@@ -3749,7 +4182,7 @@ frappe.PrintDesigner = class PrintDesigner {
 		}
 	}
 	
-	get_table_preview_html(fields) {
+	get_table_preview_html(fields, fieldname = null) {
 		if (!fields || !fields.length) {
 			return `<div class="text-muted">${__("No fields selected")}</div>`;
 		}
@@ -3773,38 +4206,120 @@ frappe.PrintDesigner = class PrintDesigner {
 			html += `<th ${widthAttr} data-fieldname="${field.fieldname}" style="font-weight: 700; background-color: #f8f8f8; text-align: center;"><strong>${field.label || field.fieldname}</strong>${resizer}</th>`;
 		});
 		
+		// Add extra safety check to ensure doc.row. is never in HTML
+		const ensureNoDocRow = (str) => {
+			if (str.includes('doc.row.')) {
+				console.error('CRITICAL: Found doc.row. in table HTML generation');
+				return str.replace(/doc\.row\./g, 'row.');
+			}
+			return str;
+		};
+		
 		html += `
 					</tr>
 				</thead>
 				<tbody>
-					<tr>
 		`;
 		
-		// Add sample data row
+		// Check if we have data from a document to show as example
+		if (this.document_data) {
+			// If fieldname is provided, check for that specific table data first
+			if (fieldname && this.document_data[fieldname] && 
+				Array.isArray(this.document_data[fieldname]) && 
+				this.document_data[fieldname].length > 0) {
+				
+				// Use the specified table field data
+				const tableData = this.document_data[fieldname];
+				
+				// Display up to 3 rows for preview
+				tableData.slice(0, 3).forEach(row => {
+					html += '<tr>';
 		fields.forEach(field => {
+						const value = row[field.fieldname] !== undefined ? row[field.fieldname] : '';
+						html += `<td>${value}</td>`;
+					});
+					html += '</tr>';
+				});
+			} else {
+				// Look for any available table data
+				const tableFields = Object.keys(this.document_data).filter(key => {
+					return Array.isArray(this.document_data[key]) && 
+					       this.document_data[key].length > 0 && 
+					       typeof this.document_data[key][0] === 'object';
+				});
+				
+				// Use the first available table data for preview if we have it
+				if (tableFields.length > 0) {
+					const tableData = this.document_data[tableFields[0]];
+					
+					// Display up to 3 rows for preview
+					tableData.slice(0, 3).forEach(row => {
+						html += '<tr>';
+						fields.forEach(field => {
+							const value = row[field.fieldname] !== undefined ? row[field.fieldname] : '';
+							html += `<td>${value}</td>`;
+						});
+						html += '</tr>';
+					});
+				} else {
+					// No table data, show sample data row
+					html += '<tr>';
+					fields.forEach(() => {
 			html += `<td>${__("Sample data")}</td>`;
 		});
+					html += '</tr>';
+				}
+			}
+		} else {
+			// No document data, show sample data row
+			html += '<tr>';
+			fields.forEach(() => {
+				html += `<td>${__("Sample data")}</td>`;
+			});
+			html += '</tr>';
+		}
 		
 		html += `
-					</tr>
 				</tbody>
 			</table>
 		`;
 		
-		return html;
+		// Apply safety check before returning
+		return ensureNoDocRow(html);
 	}
 	
 	update_table_preview(tableElement, allFields, selectedFieldnames) {
 		// Find the fields that are selected
 		const selectedFields = allFields.filter(f => selectedFieldnames.includes(f.fieldname));
 		
-		// Get the table element within the table placeholder
-		const table = tableElement.querySelector('table');
-		if (!table) return;
-		
 		// Get table field name and child doctype
 		const fieldname = tableElement.getAttribute('data-fieldname');
-		const childDoctype = tableElement.getAttribute('data-options');
+		const childDoctype = tableElement.getAttribute('data-options') || tableElement.getAttribute('data-childtype');
+		
+		// Get the table element within the table placeholder
+		let table = tableElement.querySelector('table');
+		
+		// If table doesn't exist, create one
+		if (!table) {
+			// First, clear any existing content (like placeholder text)
+			tableElement.innerHTML = '';
+			
+			// Create a new table
+			table = document.createElement('table');
+			table.className = 'table table-bordered';
+			table.style.width = '100%';
+			table.style.tableLayout = 'fixed';
+			
+			// Create thead and tbody
+			const thead = document.createElement('thead');
+			const tbody = document.createElement('tbody');
+			
+			table.appendChild(thead);
+			table.appendChild(tbody);
+			
+			// Add the table to the element
+			tableElement.appendChild(table);
+		}
 		
 		// Ensure table has 100% width and fixed layout
 		table.style.width = '100%';
@@ -3841,26 +4356,140 @@ frappe.PrintDesigner = class PrintDesigner {
 		if (rowStyles.backgroundColor) cellStyleStr += `background-color: ${rowStyles.backgroundColor}; `;
 		if (rowStyles.textAlign) cellStyleStr += `text-align: ${rowStyles.textAlign}; `;
 		
-		// Create table body with Jinja template for looping over the table data
-		let tbodyHTML = `{% for row in doc.${fieldname} %}\n<tr>`;
-		selectedFields.forEach(field => {
-			tbodyHTML += `\n  <td style="${cellStyleStr}">{{ row.${field.fieldname} }}</td>`;
-		});
-		tbodyHTML += `\n</tr>\n{% endfor %}`;
+		// Escape any special characters in the style string for use in the Jinja template
+		const escapedCellStyleStr = cellStyleStr.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
 		
-		// For display in the editor, add a sample row
-		let sampleHTML = '<tr>';
+		// Create table body with Jinja template for looping over the table data - simplified version
+		let tbodyHTML = '';
+		
+		// Create the simplest possible Jinja template to avoid syntax issues
+		tbodyHTML = `{% if doc.${fieldname} %}
+  {% for row in doc.${fieldname} %}
+    <tr>`;
+		
+		// Add cells for each selected field
+		selectedFields.forEach(field => {
+			// Use the clean field name if available, otherwise clean it again
+			const cleanFieldName = field.clean_fieldname || field.fieldname.replace(/[^a-zA-Z0-9_]/g, '_');
+			
+			// Create a very simple cell without complex conditionals - MAKE SURE we use row.fieldname not doc.row.fieldname
+			tbodyHTML += `
+      <td style="padding: 8px; ${rowStyles.textAlign ? 'text-align: ' + rowStyles.textAlign + ';' : ''}">{{row.${cleanFieldName}}}</td>`;
+			
+			// Double-check we didn't accidentally add doc.row
+			if (tbodyHTML.includes('doc.row.')) {
+				console.error(`ERROR: Added doc.row. prefix for field ${cleanFieldName}!`);
+				// Immediately fix it
+				tbodyHTML = tbodyHTML.replace(/doc\.row\./g, 'row.');
+			}
+		});
+		
+		// Close the template
+		tbodyHTML += `
+    </tr>
+  {% endfor %}
+{% else %}
+  <tr>
+    <td colspan="${selectedFields.length}" style="text-align: center; padding: 8px;">No data available</td>
+  </tr>
+{% endif %}`;
+		
+		// Log the template for debugging
+		console.log("Generated table template:", tbodyHTML);
+		
+		// DEBUGGING: Print the template to evaluate the problem
+		console.log("TABLE TEMPLATE IS:", tbodyHTML);
+		
+		// Before saving to the element's attribute, verify it doesn't contain doc.row.
+		if (tbodyHTML.includes("doc.row.")) {
+			console.error("ERROR: Template contains 'doc.row.' which will cause syntax errors!");
+			// Fix any doc.row. occurrences
+			tbodyHTML = tbodyHTML.replace(/doc\.row\./g, "row.");
+		}
+		
+		// Check directly in the template content for any instances of doc.row.
+		let tempDiv = document.createElement('div');
+		tempDiv.innerHTML = tbodyHTML;
+		let templateText = tempDiv.textContent || tempDiv.innerText;
+		if (templateText.includes('doc.row.')) {
+			console.error("ERROR: Template still contains 'doc.row.' after initial cleanup!");
+			// More aggressive replacement directly in the string
+			tbodyHTML = tbodyHTML.replace(/doc\.row\./g, "row.");
+			templateText = templateText.replace(/doc\.row\./g, "row.");
+		}
+		
+		// For display in the editor, check if we have actual data
+		let sampleHTML = '';
+		
+		// Check if we have real data from the document
+		if (this.document_data && this.document_data[fieldname] && this.document_data[fieldname].length) {
+			// We have real data, use it to create table rows
+			const tableData = this.document_data[fieldname];
+			tableData.slice(0, 3).forEach(row => {  // Display max 3 rows for preview
+				sampleHTML += '<tr>';
+				selectedFields.forEach(field => {
+					const value = row[field.fieldname] !== undefined ? row[field.fieldname] : '';
+					// Escape HTML in the value to prevent rendering issues
+					const escapedValue = typeof value === 'string' ? 
+						value.replace(/&/g, '&amp;')
+							.replace(/</g, '&lt;')
+							.replace(/>/g, '&gt;')
+							.replace(/"/g, '&quot;')
+							.replace(/'/g, '&#39;') : 
+						value;
+					// Use cellStyleStr for the HTML display in the editor
+					sampleHTML += `<td style="${cellStyleStr}">${escapedValue}</td>`;
+				});
+				sampleHTML += '</tr>';
+			});
+		} else {
+			// No data available, use sample data
+			sampleHTML = '<tr>';
 		selectedFields.forEach(() => {
+				// Use cellStyleStr for the HTML display in the editor
 			sampleHTML += `<td style="${cellStyleStr}">${__("Sample data")}</td>`;
 		});
 		sampleHTML += '</tr>';
+		}
+		
+		// Make sure the table has thead and tbody elements
+		if (!table.querySelector('thead')) {
+			const thead = document.createElement('thead');
+			table.appendChild(thead);
+		}
+		
+		if (!table.querySelector('tbody')) {
+			const tbody = document.createElement('tbody');
+			table.appendChild(tbody);
+		}
 		
 		// Update the table
 		table.querySelector('thead').innerHTML = theadHTML;
 		
 		// Store both the Jinja template and sample HTML
 		tableElement.setAttribute('data-jinja-template', tbodyHTML);
-		table.querySelector('tbody').innerHTML = sampleHTML;
+		// Also set data-jinja-code attribute to ensure server-side processing works correctly
+		tableElement.setAttribute('data-jinja-code', tbodyHTML);
+		
+		// For display purposes, set the actual tbody content to this template so the user 
+		// can see the exact template that will be used (not just sample data)
+		const tbodyElement = table.querySelector('tbody');
+		// First update with the template so it's stored in the DOM
+		tbodyElement.innerHTML = tbodyHTML;
+		
+		// Now check for any remaining doc.row. references in the actual DOM
+		if (tbodyElement.innerHTML.includes('doc.row.')) {
+			console.error("FINAL CHECK: Still found doc.row. in table HTML!");
+			// Do a final replacement in the actual DOM
+			tbodyElement.innerHTML = tbodyElement.innerHTML.replace(/doc\.row\./g, "row.");
+		}
+		
+		// Then update with sample data for preview
+		tbodyElement.innerHTML = sampleHTML;
 		
 		// Add a hidden div with a note about the dynamic table
 		let noteElement = tableElement.querySelector('.table-dynamic-note');
@@ -3872,7 +4501,13 @@ frappe.PrintDesigner = class PrintDesigner {
 			noteElement.style.marginTop = '5px';
 			tableElement.appendChild(noteElement);
 		}
-		noteElement.textContent = `Dynamic table from ${fieldname} (${childDoctype})`;
+		
+		// Update the note to mention if real data is being shown
+		if (this.document_data && this.document_data[fieldname] && this.document_data[fieldname].length) {
+			noteElement.textContent = `${__("Showing real data from")} ${fieldname} (${childDoctype})`;
+		} else {
+			noteElement.textContent = `${__("Dynamic table from")} ${fieldname} (${childDoctype})`;
+		}
 		
 		// Initialize column resizers
 		this.initializeColumnResizers(table);
@@ -4039,42 +4674,18 @@ frappe.PrintDesigner = class PrintDesigner {
 
 	// Method to generate QR code using QRious
 	generateQRCode(qrcodeElement, isPreview = false) {
-		// Check if QRious library is loaded
-		if (typeof QRious === 'undefined') {
-			frappe.throw(__('QRious library not loaded. Please refresh the page.'));
-			return;
-		}
+		if (!qrcodeElement) return;
 		
 		// Get QR code parameters
-		const value = qrcodeElement.getAttribute('data-value') || 'https://frappeframework.com';
+		const value = qrcodeElement.getAttribute('data-value') || '{{ doc.name }}';
 		const size = parseInt(qrcodeElement.getAttribute('data-size')) || 150;
-		const background = qrcodeElement.getAttribute('data-background') || 'white';
-		const foreground = qrcodeElement.getAttribute('data-foreground') || 'black';
 		const padding = parseInt(qrcodeElement.getAttribute('data-padding')) || 10;
-		const level = qrcodeElement.getAttribute('data-level') || 'L';
 		
-		// Determine the QR code value
-		let qrValue = value;
+		// Always use a placeholder value for preview to make it clear it's just a preview
+		const previewValue = "Preview QR Code";
 		
-		// If it's a field reference and we're in preview mode, generate a sample value
-		if (value.includes('{{') && value.includes('}}')) {
-			if (isPreview) {
-				const fieldName = value.replace('{{', '').replace('}}', '').trim();
-				qrValue = `Sample data for ${fieldName}`;
-			} else {
-				// In design mode, we just show a placeholder with the field name
-				qrValue = 'https://frappeframework.com';
-			}
-		}
-		
-		// Find or create canvas for the QR code
-		let canvas = qrcodeElement.querySelector('canvas');
-		if (!canvas) {
-			const canvasId = 'qrcode-canvas-' + Date.now();
-			canvas = document.createElement('canvas');
-			canvas.id = canvasId;
-			canvas.width = size;
-			canvas.height = size;
+		// Generate the QR code URL for the preview
+		const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(previewValue)}&size=${size}x${size}`;
 			
 			// Get or create the display container
 			let qrcodeDisplay = qrcodeElement.querySelector('.qrcode-display');
@@ -4090,32 +4701,237 @@ frappe.PrintDesigner = class PrintDesigner {
 				
 				// Clear the element and append the new display div
 				qrcodeElement.innerHTML = '';
-				qrcodeDisplay.appendChild(canvas);
 				qrcodeElement.appendChild(qrcodeDisplay);
 			} else {
 				qrcodeDisplay.innerHTML = '';
-				qrcodeDisplay.appendChild(canvas);
+		}
+		
+		// Create and add the image element
+		const img = document.createElement('img');
+		img.src = qrUrl;
+		img.alt = 'QR Code';
+		img.style.width = size + 'px';
+		img.style.height = size + 'px';
+		qrcodeDisplay.appendChild(img);
+		
+		// Always use {{ doc.name }} as the default template value if the current value isn't already a template
+		let templateValue = value;
+		if (!templateValue.includes('{{') && !templateValue.includes('}}')) {
+			templateValue = '{{ doc.name }}';
+		}
+		
+		// Create a simple template with the doc reference
+		const actualHtml = `<img src="https://api.qrserver.com/v1/create-qr-code/?data=${templateValue}&size=${size}x${size}" alt="QR Code" style="width:${size}px;height:${size}px;"/>`;
+		qrcodeElement.setAttribute('data-html-template', actualHtml);
+	}
+
+	// Update existing field elements with real data from the loaded document
+	update_field_elements_with_real_data() {
+		if (!this.document_data) return;
+		
+		// Find all field elements in the canvas
+		const canvas = document.getElementById('print-canvas');
+		if (!canvas) return;
+		
+		const fieldElements = canvas.querySelectorAll('.field-element');
+		fieldElements.forEach(element => {
+			const fieldname = element.getAttribute('data-fieldname');
+			const fieldtype = element.getAttribute('data-fieldtype');
+			
+			// Extract the base fieldname without doctype prefix
+			let baseName = fieldname;
+			if (fieldname.includes('.')) {
+				const parts = fieldname.split('.');
+				baseName = parts[parts.length - 1];
+			}
+			
+			// Get the value from the document data
+			let value = this.get_field_value(fieldname);
+			
+			// Format the value based on fieldtype
+			if (value !== undefined && value !== null) {
+				// Format based on fieldtype
+				if (fieldtype === 'Date' && value) {
+					value = frappe.datetime.str_to_user(value);
+				} else if (fieldtype === 'Currency' && value) {
+					value = format_currency(value, frappe.defaults.get_default('currency'));
+				} else if (fieldtype === 'Check' && value !== undefined) {
+					value = value ? '✓' : '✗';
+				}
+				
+				// Update the element with the real value
+				element.textContent = value;
+			} else {
+				// If no value found, show a placeholder
+				element.textContent = this.get_field_placeholder(fieldtype);
+			}
+		});
+		
+		// Also update table fields if there are any
+		this.update_all_table_elements_with_real_data();
+	}
+	
+	// Helper function to get value from nested document data
+	get_field_value(fieldname) {
+		if (!fieldname) return undefined;
+		
+		// First check if we have a document_data object
+		if (!this.document_data) {
+			return `No document data`;
+		}
+		
+		// Handle simple field from main document
+		if (!fieldname.includes('.')) {
+			// Check if we're currently viewing a related doctype
+			if (this.current_document && this.current_document.is_related && this.related_documents) {
+				// Get data from the currently selected related document
+				const relatedData = this.related_documents[this.current_document.doctype];
+				if (relatedData) {
+					return relatedData[fieldname];
+				}
+			}
+			// Default to main document data
+			return this.document_data[fieldname];
+		}
+		
+		// Handle nested fields (e.g., "customer.customer_name")
+		const parts = fieldname.split('.');
+		const linkFieldname = parts[0];
+		const linkedFieldname = parts[1];
+		
+		// Check in our cached data first
+		if (this.field_values_cache && this.field_values_cache[fieldname] !== undefined) {
+			return this.field_values_cache[fieldname];
+		}
+		
+		// Check if we have related document data loaded
+		if (this.related_documents && this.related_documents[linkFieldname]) {
+			const relatedDoc = this.related_documents[linkFieldname];
+			if (relatedDoc && relatedDoc[linkedFieldname] !== undefined) {
+				return relatedDoc[linkedFieldname];
+			}
+		} else if (this.document_data[linkFieldname]) {
+			// We might have the linked value directly in the main document
+			const linkedData = this.document_data[linkFieldname];
+			if (typeof linkedData === 'object' && linkedData !== null && linkedFieldname in linkedData) {
+				return linkedData[linkedFieldname];
 			}
 		}
 		
-		// Generate the QR code using QRious
-		try {
-			// Create new QRious instance
-			new QRious({
-				element: canvas,
-				value: qrValue,
-				size: size,
-				background: background,
-				foreground: foreground,
-				padding: padding, 
-				level: level
-			});
-				} catch (e) {
-			console.error('Error generating QR code:', e);
-			const qrcodeDisplay = qrcodeElement.querySelector('.qrcode-display');
-			if (qrcodeDisplay) {
-				qrcodeDisplay.innerHTML = `<div class="text-danger p-2">${__('Error generating QR code')}</div>`;
+		// If we don't have the value in our cache or related documents,
+		// use the direct API call to get just this specific field value
+		if (!this.field_values_cache) {
+			this.field_values_cache = {};
+		}
+		
+		// Check if field is already being fetched
+		if (!this.fields_being_fetched) {
+			this.fields_being_fetched = {};
+		}
+		
+		// Set a loading placeholder in the cache
+		if (!this.fields_being_fetched[fieldname]) {
+			this.field_values_cache[fieldname] = `Loading...`;
+			
+			// Show loading in the sidebar (less prominently)
+			this.update_or_create_related_sidebar_loading(linkFieldname, linkedFieldname, true);
+		}
+		
+		// Only fetch if we're not already fetching this field
+		if (!this.fields_being_fetched[fieldname]) {
+			this.fields_being_fetched[fieldname] = true;
+			
+			frappe.call({
+				method: 'invoicer.invoicer.page.invoicer.invoicer.get_related_field_value',
+				args: {
+					main_doctype: this.main_document.doctype,
+					main_docname: this.main_document.docname,
+					related_doctype: linkFieldname,
+					link_fieldname: this.get_link_fieldname_for_doctype(linkFieldname),
+					field_name: linkedFieldname
+				},
+				callback: (r) => {
+					this.fields_being_fetched[fieldname] = false;
+					
+					if (r.message && r.message.success) {
+						// Store the value in our cache
+						this.field_values_cache[fieldname] = r.message.value;
+						
+						// Also, if we don't have the related document data yet, 
+						// create a partial document with this field
+						if (!this.related_documents) {
+							this.related_documents = {};
+						}
+						
+						if (!this.related_documents[linkFieldname]) {
+							this.related_documents[linkFieldname] = {
+								name: r.message.docname
+							};
+						}
+						
+						// Add this field to the related document
+						this.related_documents[linkFieldname][linkedFieldname] = r.message.value;
+						
+						// Update the document info in the sidebar
+						if (r.message.docname) {
+							this.update_related_document_sidebar_info(linkFieldname, r.message.docname, true);
+						}
+						
+						// Update the UI with the new value
+						this.update_field_elements_with_real_data();
+					} else {
+						const errorMsg = r.message?.message || 'Field not found';
+						this.field_values_cache[fieldname] = `Error: ${errorMsg}`;
+						
+						// Show a more user-friendly error
+						this.update_related_document_sidebar_error(linkFieldname, errorMsg, true);
+						
+						// Update the UI anyway, which will show the error message
+						this.update_field_elements_with_real_data();
+					}
 				}
+			});
+		}
+		
+		// Return the placeholder or cached value while we wait for the API call
+		return this.field_values_cache[fieldname];
+	}
+	
+	// Add a utility function to show loading in the sidebar
+	update_or_create_related_sidebar_loading(doctype, fieldname, quiet = false) {
+		// Skip creating sidebar elements as per user request
+		// The document info sidebar section has been removed
+		return;
+	}
+	
+	// Add a utility function to show errors in the sidebar
+	update_related_document_sidebar_error(doctype, errorMessage, quiet = false) {
+		// Skip creating sidebar elements as per user request
+		// The document info sidebar section has been removed
+		return;
+	}
+	
+	// Update all table elements with real data
+	update_all_table_elements_with_real_data() {
+		if (!this.document_data) return;
+		
+		// Find all table elements in the canvas
+		const canvas = document.getElementById('print-canvas');
+		if (!canvas) return;
+		
+		// Get all table elements
+		const tableElements = canvas.querySelectorAll('.table-element');
+		
+		// For each table element, update it with real data if available
+		tableElements.forEach(tableElement => {
+			const fieldname = tableElement.getAttribute('data-fieldname');
+			const selectedFields = JSON.parse(tableElement.getAttribute('data-selected-fields') || '[]');
+			const allFields = JSON.parse(tableElement.getAttribute('data-all-fields') || '[]');
+			
+			if (selectedFields.length > 0 && allFields.length > 0) {
+				// Re-render the table with latest data
+				this.update_table_preview(tableElement, allFields, selectedFields);
 			}
+		});
 	}
 }
